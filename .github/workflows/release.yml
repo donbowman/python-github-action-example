@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    if: vars.RELEASE_APP_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Install Poetry
+        run: pipx install poetry==2.5.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: poetry
+          cache-dependency-path: poetry.lock
+
+      - name: Verify release baseline tag
+        run: |
+          if ! git tag --list 'v*' | grep -q .; then
+            echo "::error::No v* tag found. Push the initial v0.1.0 tag before releasing."
+            exit 1
+          fi
+
+      - name: Install release dependencies
+        run: poetry install --only release --no-root --no-interaction
+
+      - name: Bump version, commit, tag and release
+        id: release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: poetry run semantic-release -v version
+
+  container:
+    name: container
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/container.yml
+    with:
+      tag: ${{ needs.release.outputs.tag }}
+      ref: ${{ needs.release.outputs.commit_sha }}
