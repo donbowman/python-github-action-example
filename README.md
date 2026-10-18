@@ -34,6 +34,45 @@ Python 3.14 only. No version matrix.
 └── .pre-commit-config.yaml
 ```
 
+**Reference implementation:** every step below is in
+[donbowman/python-github-action-example](https://github.com/donbowman/python-github-action-example).
+The links point at `main`.
+
+## The pipeline, step by step
+
+Each row is a decision you would make in a new repository, the file that implements it,
+and the reason it is there. The sections after this table explain each step in more
+detail.
+
+| # | Step | Implementation | Rationale |
+| --- | --- | --- | --- |
+| 1 | Pin the toolchain and dependencies | [`pyproject.toml`](https://github.com/donbowman/python-github-action-example/blob/main/pyproject.toml), [`poetry.lock`](https://github.com/donbowman/python-github-action-example/blob/main/poetry.lock), [`poetry.toml`](https://github.com/donbowman/python-github-action-example/blob/main/poetry.toml) | Python 3.14 and the dev tools are fixed, and the lock file makes CI, local runs and the image resolve the same versions. |
+| 2 | Catch mistakes before they leave the laptop | [`.pre-commit-config.yaml`](https://github.com/donbowman/python-github-action-example/blob/main/.pre-commit-config.yaml) | Black and flake8 run before the commit exists, and gitleaks runs before the push. The feedback is local, fast and cheap. |
+| 3 | Prove the pull request | [`ci.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/ci.yml) | Black, flake8 and pytest are separate jobs and required checks, so a red check blocks the merge. |
+| 4 | Scan the supply chain | [`security.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/security.yml), [`poetry.lock`](https://github.com/donbowman/python-github-action-example/blob/main/poetry.lock) | gitleaks scans history, Trivy scans the lock file and the repository, and Syft emits an SBOM. This runs on every pull request and weekly. |
+| 5 | Turn commits into a version | [`release.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/release.yml), [`pyproject.toml`](https://github.com/donbowman/python-github-action-example/blob/main/pyproject.toml) | Conventional commits produce a deterministic version, changelog, tag and GitHub release without a human editing the version. |
+| 6 | Build, scan, then publish | [`container.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/container.yml), [`Dockerfile`](https://github.com/donbowman/python-github-action-example/blob/main/Dockerfile) | The image is built, scanned and SBOM'd before registry login. A failing scan publishes nothing. |
+| 7 | Protect the branch and tags | [`main.json`](https://github.com/donbowman/python-github-action-example/blob/main/docs/rulesets/main.json), [`tags.json`](https://github.com/donbowman/python-github-action-example/blob/main/docs/rulesets/tags.json) | `main` is pull-request only, the four checks are required, and `v*` tags cannot be moved or deleted. |
+| 8 | Remove long-lived cloud secrets | [`container.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/container.yml), [ACR section](#azure-container-registry-with-github-oidc-without-a-pat) | GitHub OIDC and an Entra federated credential replace a PAT or client secret with a short-lived token scoped to `AcrPush`. |
+| 9 | Keep the pins moving | [`renovate.json`](https://github.com/donbowman/python-github-action-example/blob/main/renovate.json) | Renovate updates Poetry, the lock file, Actions, the container base and pre-commit with conventional commits, so updates use the same gates. |
+
+The flow is deliberately serial:
+
+1. A developer commits. Pre-commit fixes formatting, runs flake8 and stops a secret
+   from being pushed.
+2. The branch is pushed and a pull request is opened. CI and Security run.
+3. The ruleset refuses the merge until `lint`, `test`, `gitleaks` and `trivy-fs` pass.
+4. The squash merge writes a conventional commit to `main`.
+5. Release reads the commits since the last tag, bumps the version, commits the bump,
+   tags it and creates a GitHub release.
+6. The release workflow calls the container workflow with that tag and the release
+   commit, so the image contains the same version it is tagged with.
+7. The image is scanned and an SBOM is produced before any registry credential is used.
+8. Azure OIDC exchanges the workflow identity for a short-lived ACR token and the image
+   is pushed.
+9. Renovate opens conventional pull requests for dependency updates, and those take the
+   same path.
+
 ## Quick start
 
 ```bash
@@ -102,7 +141,9 @@ poetry install
 poetry run pre-commit install
 ```
 
-`default_install_hook_types` in `.pre-commit-config.yaml` installs both hook types:
+`default_install_hook_types` in
+[`.pre-commit-config.yaml`](https://github.com/donbowman/python-github-action-example/blob/main/.pre-commit-config.yaml)
+installs both hook types:
 
 - **pre-commit**: whitespace and file hygiene, `black`, then `flake8`
 - **pre-push**: `gitleaks` scans the commits being pushed for secrets
@@ -123,10 +164,10 @@ credential before it reaches GitHub, which is much cheaper than rotating it late
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | push to `main`, every pull request | `black --check`, `flake8`, `pytest` on Python 3.14 |
-| `security.yml` | push to `main`, every pull request, weekly | gitleaks over full history, Trivy filesystem scan, source SBOM artifact |
-| `release.yml` | push to `main` | semantic-release bumps `pyproject.toml`, commits, tags, creates a GitHub release, then calls the container workflow |
-| `container.yml` | called by `release.yml`, manual dispatch, pull requests that touch container inputs | builds the image, Trivy image scan, image SBOM, and pushes to ACR when a tag is supplied |
+| [`ci.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/ci.yml) | push to `main`, every pull request | `black --check`, `flake8`, `pytest` on Python 3.14 |
+| [`security.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/security.yml) | push to `main`, every pull request, weekly | gitleaks over full history, Trivy filesystem scan, source SBOM artifact |
+| [`release.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/release.yml) | push to `main` | semantic-release bumps `pyproject.toml`, commits, tags, creates a GitHub release, then calls the container workflow |
+| [`container.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/container.yml) | called by `release.yml`, manual dispatch, pull requests that touch container inputs | builds the image, Trivy image scan, image SBOM, and pushes to ACR when a tag is supplied |
 
 All workflows default to `contents: read`. Only the release job gets `contents: write`,
 and only the container job gets `id-token: write` for Azure OIDC.
@@ -144,7 +185,9 @@ different versions.
 
 - **gitleaks** scans the full git history, not just the diff, because a secret removed
   in a later commit is still leaked.
-- **Trivy filesystem** scans the repository and `poetry.lock` directly. Trivy
+- **Trivy filesystem** scans the repository and
+  [`poetry.lock`](https://github.com/donbowman/python-github-action-example/blob/main/poetry.lock)
+  directly. Trivy
   understands Poetry's package groups and excludes development dependencies by
   default, so the scan reflects the runtime dependency set. `pyproject.toml` alone is
   not a lock file; the committed `poetry.lock` is what makes this repeatable.
@@ -194,7 +237,8 @@ When a release is due, the workflow:
 3. commits as `chore(release): <version> [skip ci]`
 4. creates the `v<version>` tag
 5. creates the GitHub release
-6. calls `container.yml` with the new tag and release commit SHA
+6. calls [`container.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/container.yml)
+   with the new tag and release commit SHA
 
 The `[skip ci]` marker stops the version bump commit from starting another CI or
 release run. The container build is called directly from the same workflow run, so it
@@ -209,9 +253,10 @@ checker is a reasonable addition if contributors forget.
 
 ### Container
 
-`container.yml` builds with Buildx, loads the image into the local daemon, scans it
-with Trivy, generates an SPDX SBOM, and only then pushes. If the scan fails, nothing is
-pushed to the registry.
+[`container.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/container.yml)
+builds with Buildx, loads the image into the local daemon, scans it with Trivy,
+generates an SPDX SBOM, and only then pushes. If the scan fails, nothing is pushed to
+the registry.
 
 On a release tag such as `v0.2.0`, the pushed tags are:
 
@@ -242,7 +287,8 @@ docker run --rm -v app-data:/data python-github-action-example:local alembic upg
 ## Repository protection and rulesets
 
 `main` must be changed only through pull requests. The ruleset in
-`docs/rulesets/main.json` enforces:
+[`docs/rulesets/main.json`](https://github.com/donbowman/python-github-action-example/blob/main/docs/rulesets/main.json)
+enforces:
 
 - no branch deletion
 - no force push (`non_fast_forward`)
@@ -251,7 +297,8 @@ docker run --rm -v app-data:/data python-github-action-example:local alembic upg
 - required status checks: `lint`, `test`, `gitleaks`, `trivy-fs`
 - branches must be up to date with `main` before merging
 
-`docs/rulesets/tags.json` protects `v*` tags from deletion, force moves and updates.
+[`docs/rulesets/tags.json`](https://github.com/donbowman/python-github-action-example/blob/main/docs/rulesets/tags.json)
+protects `v*` tags from deletion, force moves and updates.
 
 The only bypass actor is the release GitHub App described below. Humans, including
 repository admins, do not get a bypass entry. Repository admins can still edit or
@@ -290,7 +337,10 @@ gh api "repos/$OWNER/$REPO/rulesets" --jq '.[] | {name, target, enforcement}'
 
 The JSON files are templates. `actor_id: 0` is not a valid app ID; replace it with the
 real App ID using the `jq` command above or add the app through
-**Settings > Rules > Rulesets > Protect main > Bypass list**.
+**Settings > Rules > Rulesets > Protect main > Bypass list**. The checked-in copies are
+[`main.json`](https://github.com/donbowman/python-github-action-example/blob/main/docs/rulesets/main.json)
+and
+[`tags.json`](https://github.com/donbowman/python-github-action-example/blob/main/docs/rulesets/tags.json).
 
 ## The release GitHub App, without a PAT
 
@@ -314,8 +364,10 @@ gh variable set RELEASE_APP_ID --body "<app id>"
 gh secret set RELEASE_APP_PRIVATE_KEY < /path/to/app-private-key.pem
 ```
 
-The workflow uses `actions/create-github-app-token@v3` with those values. The token is
-scoped to this repository, has only `contents: write`, and expires after one hour.
+The workflow uses `actions/create-github-app-token@v3` in
+[`release.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/release.yml)
+with those values. The token is scoped to this repository, has only `contents: write`,
+and expires after one hour.
 `semantic-release` uses it for the push, tag and release. The app is the ruleset bypass
 actor, so the push succeeds without weakening protection for people.
 
@@ -326,7 +378,9 @@ ruleset bypass list.
 
 ## Azure Container Registry with GitHub OIDC, without a PAT
 
-The container workflow authenticates to Azure with a federated credential. There is no
+The container workflow
+([`container.yml`](https://github.com/donbowman/python-github-action-example/blob/main/.github/workflows/container.yml))
+authenticates to Azure with a federated credential. There is no
 client secret, no registry password and no personal access token in GitHub. The trust
 relationship is between this repository's GitHub OIDC identity and an Entra ID app
 registration.
@@ -410,7 +464,9 @@ Azure section above.
 
 ## Dependency updates
 
-Renovate is configured in `renovate.json`. Install the Renovate GitHub App on the
+Renovate is configured in
+[`renovate.json`](https://github.com/donbowman/python-github-action-example/blob/main/renovate.json).
+Install the Renovate GitHub App on the
 repository to enable it. Renovate keeps `pyproject.toml` and `poetry.lock`, the
 Dockerfile base image, the pre-commit hook revisions and the GitHub Actions versions
 current, groups related updates, and uses conventional commit messages so dependency
